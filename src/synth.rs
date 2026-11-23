@@ -4,10 +4,134 @@
 
 use crate::envelope::{M4aEnvelope, SF_LOOP, SF_START};
 use crate::freq::{div_freq_for_rate, freq_step_q23};
-use crate::sample::M4aSampleView;
+use crate::sample::{decode_dpcm_block, M4aSampleView, DPCM_BLOCK_BYTES, DPCM_BLOCK_SAMPLES};
 
 /// Standard M4A DirectSound DMA ring buffer size per channel (`0x630` = 1,584 bytes).
 pub const PCM_DMA_BUF_SIZE: usize = 0x630;
+
+/// Nintendo R&D1 (*Metroid Fusion* / *Zero Mission*) DirectSound DMA ring buffer stride (`0x600` bytes).
+pub const RD1_DMA_BUF_SIZE: usize = 0x600;
+
+/// Binary-verified ARM7TDMI `SoundMainRAM` mixer variants observed across the GBA M4A corpus.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum M4aMixerVariant {
+    /// Standard Nintendo M4A SDK v2 stereo Q23 linear mixer (~68% of titles:
+    /// *Advance Wars*, *Golden Sun*, *Fire Emblem*, *Mother 3*, *Mario & Luigi*, etc.).
+    #[default]
+    Standard,
+    /// Game Freak Pokemon Gen 3 M4A SDK v2 stereo mixer (*FireRed*, *LeafGreen*, *Emerald*,
+    /// *Ruby*, *Sapphire*): adds `start_offset` on key-on, 4-bit quadratic DPCM
+    /// (`voice_type & 0x20`, `WaveData.wave_type != 0`), and reverse playback (`voice_type & 0x10`).
+    PokemonGen3,
+    /// Nintendo M4A SDK v2 mono mixer (~24% of titles: *Mario Kart: Super Circuit*,
+    /// *The Legend of Zelda: The Minish Cap*, *Castlevania: AoS / HoD*, *FFTA*, *Mega Man Zero*).
+    /// Uses 2-sample `>> 8` reverb and `(vol_r + vol_l) >> 9` mono volume scaling.
+    Mono,
+    /// Early 2001 Nintendo M4A SDK v1 stereo mixer (~2.5% of titles: *EZ-Talk*, *Momotarou Matsuri*).
+    /// Uses an exact-Hz modulo phase accumulator (`0..sample_rate`) and double-multiply linear
+    /// interpolation `s0 + ((diff * fw * div_freq) >> 23)` with zero Q23 pitch drift.
+    EarlyV1Stereo,
+    /// Early 2001 Nintendo M4A SDK v1 mono mixer (*Mr. Driller 2*).
+    /// Combines the exact-Hz modulo resampler with mono `>> 8` reverb and `(vol_r + vol_l) >> 9` volume.
+    EarlyV1Mono,
+    /// Nintendo R&D1 high-precision 32-bit stereo mixer (*Metroid Fusion*, *Metroid: Zero Mission*).
+    /// Uses Q14 linear interpolation (`lsr #14`), 32-bit `i32` stereo accumulation, `<< 7` reverb
+    /// pre-scaling, reverse playback (`voice_type == 0x20`), and a 9-bit signed saturating `>> 7` clamp.
+    MetroidRd1,
+}
+
+/// Detect the [`M4aMixerVariant`] present in a raw GBA ROM image (`#![no_std]`, zero-allocation).
+///
+/// Scans for the binary-verified ARM/Thumb instruction signatures of Nintendo's `SoundMainRAM`
+/// (SDK v1/v2 stereo & mono, Game Freak Pokemon Gen 3) and Nintendo R&D1's IWRAM ARM mixer.
+#[must_use]
+pub fn detect_mixer_variant(rom: &[u8]) -> Option<M4aMixerVariant> {
+    // 1. Scan for standard M4A SoundMainRAM Thumb prologue:
+    //    `ldrb r3, [r0, #5]; cmp r3, #0` (43 79 00 2B) followed within 12 bytes by
+    //    `adr r1, #0/#4; bx r1` (00/01 A1 08 47).
+    let mut i = 0usize;
+    while i + 0x10 <= rom.len() {
+        if rom[i] == 0x43 && rom[i + 1] == 0x79 && rom[i + 2] == 0x00 && rom[i + 3] == 0x2B {
+            let win_end = (i + 16).min(rom.len());
+            let mut has_arm_switch = false;
+            let mut j = i + 4;
+            while j + 4 <= win_end {
+                if (rom[j] == 0x00 || rom[j] == 0x01)
+                    && rom[j + 1] == 0xA1
+                    && rom[j + 2] == 0x08
+                    && rom[j + 3] == 0x47
+                {
+                    has_arm_switch = true;
+                    break;
+                }
+                j += 2;
+            }
+            if has_arm_switch {
+                let body_end = (i + 0x3A0).min(rom.len());
+                let body = &rom[i..body_end];
+                // Check reverb shift: `asr r0, r1, #8` (0xE1A00441 -> 41 04 A0 E1) = Mono
+                //                     `asr r0, r1, #9` (0xE1A004C1 -> C1 04 A0 E1) = Stereo
+                let rev_end = body.len().min(0x60);
+                let mut is_mono = false;
+                let mut k = 0usize;
+                while k + 4 <= rev_end {
+                    let w = u32::from_le_bytes([body[k], body[k + 1], body[k + 2], body[k + 3]]);
+                    if w == 0xE1A0_0441 {
+                        is_mono = true;
+                        break;
+                    }
+                    k += 2;
+                }
+
+                // Check for Q23 `bic r?, r?, #0x3F800000` (word & 0x0FE00FFF == 0x03C005FE)
+                // and Pokemon Gen 3 hook `tst r0, #0x30` (0xE3100030).
+                let mut has_q23 = false;
+                let mut has_pokemon_hook = false;
+                let mut k = 0x100usize.min(body.len());
+                while k + 4 <= body.len() {
+                    let w = u32::from_le_bytes([body[k], body[k + 1], body[k + 2], body[k + 3]]);
+                    if (w & 0x0FE0_0FFF) == 0x03C0_05FE {
+                        has_q23 = true;
+                    }
+                    if w == 0xE310_0030 {
+                        has_pokemon_hook = true;
+                    }
+                    k += 2;
+                }
+
+                return Some(if !has_q23 {
+                    if is_mono {
+                        M4aMixerVariant::EarlyV1Mono
+                    } else {
+                        M4aMixerVariant::EarlyV1Stereo
+                    }
+                } else if is_mono {
+                    M4aMixerVariant::Mono
+                } else if has_pokemon_hook {
+                    M4aMixerVariant::PokemonGen3
+                } else {
+                    M4aMixerVariant::Standard
+                });
+            }
+        }
+        i += 2;
+    }
+
+    // 2. Scan for Nintendo R&D1 ARM mixer Q14 mask setup:
+    //    `mov r7, #0; sub r7, r7, #1; lsr r7, r7, #0x12`
+    const RD1_SIG: [u8; 12] = [
+        0x00, 0x70, 0xA0, 0xE3, 0x01, 0x70, 0x47, 0xE2, 0x27, 0x79, 0xA0, 0xE1,
+    ];
+    let mut p = 0usize;
+    while p + RD1_SIG.len() <= rom.len() {
+        if rom[p..p + RD1_SIG.len()] == RD1_SIG {
+            return Some(M4aMixerVariant::MetroidRd1);
+        }
+        p += 4;
+    }
+
+    None
+}
 
 /// Hardware DirectSound channel state matching Nintendo's 64-byte `SoundChannel` struct.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -429,6 +553,781 @@ impl AccuracySynth {
         } else {
             sample as i8
         }
+    }
+
+    /// Apply Nintendo's exact Mono `SoundMainRAM` reverb feedback pass (`M4aMixerVariant::Mono`
+    /// and `M4aMixerVariant::EarlyV1Mono`, e.g. *Mario Kart: Super Circuit* `0x0805F2F4`).
+    ///
+    /// For each sample `i`:
+    /// ```text
+    /// sum = cur[i] + next[i]
+    /// out = (sum * reverb) >> 8
+    /// if (out & 0x80) != 0 { out += 1; }
+    /// cur[i] = out as i8;
+    /// ```
+    pub fn reverb_pass_mono(cur: &mut [i8], next: &[i8], reverb: u8) {
+        if reverb == 0 {
+            cur.fill(0);
+            return;
+        }
+        let len = cur.len().min(next.len());
+        let rev = reverb as i32;
+        for (c, &n) in cur[..len].iter_mut().zip(&next[..len]) {
+            let sum = (*c as i32) + (n as i32);
+            let out = (sum * rev) >> 8;
+            let biased = (out + ((out >> 7) & 1)) as i8;
+            *c = biased;
+        }
+    }
+
+    /// Apply Nintendo R&D1's exact reverb pre-pass (`0x08003D68` in *Metroid Fusion* `AMTE`),
+    /// initializing the 32-bit stereo mixing accumulators `acc_r` and `acc_l`.
+    ///
+    /// For each sample `i`:
+    /// ```text
+    /// sum = cur_r[i] + cur_l[i] + next_r[i] + next_l[i]
+    /// out = (sum * reverb) >> 9
+    /// if out < 0 { out += 1; }   // ARM `asrs r6, r6, #9; addmi r6, r6, #1`
+    /// acc_r[i] = out << 7;
+    /// acc_l[i] = out << 7;
+    /// ```
+    pub fn reverb_pass_rd1(
+        cur_r: &[i8],
+        cur_l: &[i8],
+        next_r: &[i8],
+        next_l: &[i8],
+        acc_r: &mut [i32],
+        acc_l: &mut [i32],
+        reverb: u8,
+    ) {
+        let len = cur_r
+            .len()
+            .min(cur_l.len())
+            .min(next_r.len())
+            .min(next_l.len())
+            .min(acc_r.len())
+            .min(acc_l.len());
+        if reverb == 0 {
+            acc_r[..len].fill(0);
+            acc_l[..len].fill(0);
+            return;
+        }
+        let rev = reverb as i32;
+        for i in 0..len {
+            let sum = (cur_r[i] as i32)
+                + (cur_l[i] as i32)
+                + (next_r[i] as i32)
+                + (next_l[i] as i32);
+            let mut out = (sum * rev) >> 9;
+            if out < 0 {
+                out += 1;
+            }
+            let pre = out << 7;
+            acc_r[i] = pre;
+            acc_l[i] = pre;
+        }
+    }
+
+    /// Finalize Nintendo R&D1's 32-bit stereo mixing accumulators into 8-bit DirectSound DMA
+    /// bytes using R&D1's exact `>> 7` shift and 9-bit signed saturating clamp LUT
+    /// (`0x08003E0C` in *Metroid Fusion* `AMTE`).
+    pub fn finalize_rd1_dma8(acc_r: &[i32], acc_l: &[i32], out_r: &mut [i8], out_l: &mut [i8]) {
+        let len = acc_r
+            .len()
+            .min(acc_l.len())
+            .min(out_r.len())
+            .min(out_l.len());
+        for i in 0..len {
+            let idx_r = ((acc_r[i] as u32) >> 7) & 0x1FF;
+            let s9_r = if idx_r < 256 {
+                idx_r as i32
+            } else {
+                (idx_r as i32) - 512
+            };
+            out_r[i] = Self::clamp_i32_to_dma8(s9_r);
+
+            let idx_l = ((acc_l[i] as u32) >> 7) & 0x1FF;
+            let s9_l = if idx_l < 256 {
+                idx_l as i32
+            } else {
+                (idx_l as i32) - 512
+            };
+            out_l[i] = Self::clamp_i32_to_dma8(s9_l);
+        }
+    }
+
+    /// Mix a single channel into Nintendo R&D1's 32-bit stereo mixing accumulators (`acc_r`, `acc_l`),
+    /// matching *Metroid Fusion* (`AMTE` `0x08003EBC`) and *Metroid: Zero Mission* (`BMXE` `0x08004464`)
+    /// bit-for-bit.
+    ///
+    /// - `ch.voice_type == 0x08`: fixed 1:1 pitch (`ch.position` is sample index).
+    /// - `ch.voice_type == 0x20`: reverse Q14 linear interpolation (`ch.frac_q23` is Q14 phase).
+    /// - `ch.voice_type == 0x00`: forward Q14 linear interpolation (`ch.frac_q23` is Q14 phase).
+    /// - `step_q14`: phase increment per output sample in Q14 (`1.0x = 0x4000`).
+    #[allow(clippy::too_many_arguments)]
+    pub fn mix_channel_frame_rd1(
+        sample: &M4aSampleView<'_>,
+        ch: &mut M4aSoundChannel,
+        step_q14: u32,
+        vol_r: u8,
+        vol_l: u8,
+        acc_r: &mut [i32],
+        acc_l: &mut [i32],
+    ) {
+        let frames = acc_r.len().min(acc_l.len());
+        if frames == 0 || sample.is_empty() || ch.envelope.status_flags == 0 {
+            return;
+        }
+        let len = sample.len();
+        let looped = sample.is_looped() && sample.loop_len() > 0;
+        let loop_start = sample.loop_start();
+        let loop_len = sample.loop_len();
+        let vr = vol_r as i32;
+        let vl = vol_l as i32;
+
+        if ch.voice_type == 0x08 {
+            // Fixed 1:1 (`0x080041EC`)
+            let mut pos = ch.position;
+            for (ar, al) in acc_r[..frames].iter_mut().zip(&mut acc_l[..frames]) {
+                let s = sample.sample_i8(pos) as i32;
+                *ar = ar.wrapping_add(s.wrapping_mul(vr));
+                *al = al.wrapping_add(s.wrapping_mul(vl));
+                pos += 1;
+                if pos == len {
+                    if looped {
+                        pos = loop_start;
+                    } else {
+                        ch.envelope.status_flags = 0;
+                        break;
+                    }
+                }
+            }
+            ch.position = pos;
+        } else if ch.voice_type == 0x20 {
+            // Reverse Q14 linear interpolation (`0x08004318`)
+            let mut phase = ch.frac_q23;
+            for (ar, al) in acc_r[..frames].iter_mut().zip(&mut acc_l[..frames]) {
+                let idx = (phase >> 14) as usize;
+                let s0 = sample.sample_i8(idx) as i32;
+                let s1 = sample.sample_i8(idx.saturating_add(1)) as i32;
+                let diff = s1 - s0;
+                let frac = phase & 0x3FFF;
+                // Exact ARM `mul r4, r5, r4; add r3, r3, r4, lsr #14` (unsigned shift!)
+                let interp = s0.wrapping_add(((frac.wrapping_mul(diff as u32)) >> 14) as i32);
+                *ar = ar.wrapping_add(interp.wrapping_mul(vr));
+                *al = al.wrapping_add(interp.wrapping_mul(vl));
+                phase = phase.wrapping_sub(step_q14);
+                if ((phase >> 14) as i32) <= 0 {
+                    ch.envelope.status_flags = 0;
+                    break;
+                }
+            }
+            ch.frac_q23 = phase;
+        } else {
+            // Forward Q14 linear interpolation (`0x08003EF8`)
+            let mut phase = ch.frac_q23;
+            for (ar, al) in acc_r[..frames].iter_mut().zip(&mut acc_l[..frames]) {
+                let idx = (phase >> 14) as usize;
+                let s0 = sample.sample_i8(idx) as i32;
+                let s1 = sample.sample_i8(idx.saturating_add(1)) as i32;
+                let diff = s1 - s0;
+                let frac = phase & 0x3FFF;
+                // Exact ARM `mul r4, r5, r4; add r3, r3, r4, lsr #14` (unsigned shift!)
+                let interp = s0.wrapping_add(((frac.wrapping_mul(diff as u32)) >> 14) as i32);
+                *ar = ar.wrapping_add(interp.wrapping_mul(vr));
+                *al = al.wrapping_add(interp.wrapping_mul(vl));
+                phase = phase.wrapping_add(step_q14);
+                let next_idx = (phase >> 14) as usize;
+                if next_idx >= len {
+                    if looped {
+                        let wrapped = next_idx.saturating_sub(loop_len);
+                        phase = (phase & 0x3FFF) | ((wrapped as u32) << 14);
+                    } else {
+                        ch.envelope.status_flags = 0;
+                        break;
+                    }
+                }
+            }
+            ch.frac_q23 = phase;
+        }
+    }
+
+    /// Tick a single [`M4aSoundChannel`] for one VBlank frame using a specific [`M4aMixerVariant`].
+    ///
+    /// - For [`M4aMixerVariant::Standard`]: matches standard Nintendo SDK v2 stereo `SoundMainRAM`.
+    /// - For [`M4aMixerVariant::PokemonGen3`]: additionally supports `start_offset` on key-on,
+    ///   4-bit quadratic DPCM (`voice_type & 0x20` / `WaveData.wave_type != 0`), and reverse
+    ///   playback (`voice_type & 0x10`).
+    /// - For [`M4aMixerVariant::Mono`] and [`M4aMixerVariant::EarlyV1Mono`]: mixes mono output into
+    ///   `out_r` using Nintendo's exact `(vol_r + vol_l) >> 9` mono volume scaling (`out_l` is unused).
+    /// - For [`M4aMixerVariant::EarlyV1Stereo`]: uses the 2001 SDK v1 exact-Hz modulo resampler.
+    /// - For [`M4aMixerVariant::MetroidRd1`]: use [`Self::mix_channel_frame_rd1`] + [`Self::finalize_rd1_dma8`]
+    ///   for the 32-bit accumulator pipeline (calling this method with `MetroidRd1` falls back to `Standard`).
+    #[allow(clippy::too_many_arguments)]
+    pub fn mix_channel_frame_variant(
+        variant: M4aMixerVariant,
+        sample: &M4aSampleView<'_>,
+        ch: &mut M4aSoundChannel,
+        sample_rate: u32,
+        master_volume: u8,
+        out_r: &mut [i8],
+        out_l: &mut [i8],
+    ) {
+        let was_start = (ch.envelope.status_flags & SF_START) != 0;
+        let Some((vol_r, vol_l)) = ch.envelope.tick(
+            master_volume,
+            ch.right_volume,
+            ch.left_volume,
+            sample.is_looped(),
+        ) else {
+            return;
+        };
+
+        if was_start {
+            match variant {
+                M4aMixerVariant::PokemonGen3 => {
+                    ch.remaining = u32::try_from(ch.position)
+                        .map_or(0, |start_off| sample.header.size.saturating_sub(start_off));
+                    if (ch.voice_type & 0x10) != 0 {
+                        // Reverse playback starts from `size - start_offset`
+                        ch.position = sample.len().saturating_sub(ch.position);
+                    }
+                }
+                _ => {
+                    // Standard / Mono / EarlyV1 `SoundMainRAM` resets position to 0 on SF_START
+                    ch.position = 0;
+                    ch.remaining = sample.header.size;
+                }
+            }
+            ch.frac_q23 = 0;
+        }
+
+        if ch.remaining == 0 {
+            ch.envelope.status_flags = 0;
+            return;
+        }
+
+        match variant {
+            M4aMixerVariant::Standard | M4aMixerVariant::MetroidRd1 => {
+                if ch.is_fixed_pitch() {
+                    Self::mix_fixed_inner(sample, ch, vol_r, vol_l, out_r, out_l);
+                } else {
+                    let div_freq = div_freq_for_rate(sample_rate);
+                    Self::mix_resampled_inner(sample, ch, div_freq, vol_r, vol_l, out_r, out_l);
+                }
+            }
+            M4aMixerVariant::PokemonGen3 => {
+                if (ch.voice_type & 0x30) != 0 {
+                    let div_freq = div_freq_for_rate(sample_rate);
+                    Self::mix_pokemon_gen3_ext(sample, ch, div_freq, vol_r, vol_l, out_r, out_l);
+                } else if ch.is_fixed_pitch() {
+                    Self::mix_fixed_inner(sample, ch, vol_r, vol_l, out_r, out_l);
+                } else {
+                    let div_freq = div_freq_for_rate(sample_rate);
+                    Self::mix_resampled_inner(sample, ch, div_freq, vol_r, vol_l, out_r, out_l);
+                }
+            }
+            M4aMixerVariant::Mono => {
+                let scaled = (ch.envelope.envelope_volume as u32 * (master_volume as u32 + 1)) >> 4;
+                let vol_mono =
+                    ((scaled * (ch.right_volume as u32 + ch.left_volume as u32)) >> 9) as u8;
+                ch.envelope.envelope_volume_right = vol_mono;
+                if ch.is_fixed_pitch() {
+                    Self::mix_fixed_mono_inner(sample, ch, vol_mono, out_r);
+                } else {
+                    let div_freq = div_freq_for_rate(sample_rate);
+                    Self::mix_resampled_mono_inner(sample, ch, div_freq, vol_mono, out_r);
+                }
+            }
+            M4aMixerVariant::EarlyV1Stereo => {
+                if ch.is_fixed_pitch() {
+                    Self::mix_fixed_inner(sample, ch, vol_r, vol_l, out_r, out_l);
+                } else {
+                    let div_freq = div_freq_for_rate(sample_rate);
+                    Self::mix_early_v1_stereo_inner(
+                        sample,
+                        ch,
+                        sample_rate,
+                        div_freq,
+                        vol_r,
+                        vol_l,
+                        out_r,
+                        out_l,
+                    );
+                }
+            }
+            M4aMixerVariant::EarlyV1Mono => {
+                let scaled = (ch.envelope.envelope_volume as u32 * (master_volume as u32 + 1)) >> 4;
+                let vol_mono =
+                    ((scaled * (ch.right_volume as u32 + ch.left_volume as u32)) >> 9) as u8;
+                ch.envelope.envelope_volume_right = vol_mono;
+                if ch.is_fixed_pitch() {
+                    Self::mix_fixed_mono_inner(sample, ch, vol_mono, out_r);
+                } else {
+                    let div_freq = div_freq_for_rate(sample_rate);
+                    Self::mix_early_v1_mono_inner(
+                        sample,
+                        ch,
+                        sample_rate,
+                        div_freq,
+                        vol_mono,
+                        out_r,
+                    );
+                }
+            }
+        }
+    }
+
+    /// Game Freak Pokemon Gen 3 extended mixer (`0x081DC460..0x081DC7A0` in `BPRE`):
+    /// handles 4-bit quadratic DPCM (`WaveData.wave_type != 0`, forward & reverse) and
+    /// reverse uncompressed PCM (`voice_type & 0x10 != 0`).
+    fn mix_pokemon_gen3_ext(
+        sample: &M4aSampleView<'_>,
+        ch: &mut M4aSoundChannel,
+        div_freq: u32,
+        vol_r: u8,
+        vol_l: u8,
+        out_r: &mut [i8],
+        out_l: &mut [i8],
+    ) {
+        let frames = out_r.len().min(out_l.len());
+        if frames == 0 {
+            return;
+        }
+        let out_r = &mut out_r[..frames];
+        let out_l = &mut out_l[..frames];
+        let vr = vol_r as i32;
+        let vl = vol_l as i32;
+        let step = if ch.is_fixed_pitch() {
+            0x0080_0000
+        } else {
+            freq_step_q23(div_freq, ch.frequency)
+        };
+        let is_reverse = (ch.voice_type & 0x10) != 0;
+        let is_dpcm = sample.header.is_compressed_dpcm();
+
+        let mut pos = ch.position;
+        let mut count = ch.remaining as i32;
+        let mut fw = ch.frac_q23;
+
+        if !is_dpcm {
+            // Uncompressed reverse PCM (`0x081DC664..0x081DC6EC`)
+            if !is_reverse || pos == 0 {
+                return;
+            }
+            pos -= 1;
+            let mut s0 = sample.sample_i8(pos) as i32;
+            let mut s1 = if pos > 0 {
+                sample.sample_i8(pos - 1) as i32
+            } else {
+                0
+            };
+            let mut diff = s1 - s0;
+
+            for (r, l) in out_r.iter_mut().zip(out_l.iter_mut()) {
+                let interp = s0 + (((fw as i32).wrapping_mul(diff)) >> 23);
+                *r = r.wrapping_add(((interp * vr) >> 8) as i8);
+                *l = l.wrapping_add(((interp * vl) >> 8) as i8);
+
+                fw = fw.wrapping_add(step);
+                let int_step = fw >> 23;
+                if int_step != 0 {
+                    fw &= !0x3F80_0000;
+                    count = count.saturating_sub(int_step as i32);
+                    if count <= 0 {
+                        ch.envelope.status_flags = 0;
+                        ch.position = pos;
+                        ch.remaining = 0;
+                        ch.frac_q23 = fw;
+                        return;
+                    }
+                    pos = pos.saturating_sub(int_step as usize);
+                    s0 = sample.sample_i8(pos) as i32;
+                    s1 = if pos > 0 {
+                        sample.sample_i8(pos - 1) as i32
+                    } else {
+                        0
+                    };
+                    diff = s1 - s0;
+                }
+            }
+            ch.position = pos.saturating_add(1);
+            ch.remaining = count.max(0) as u32;
+            ch.frac_q23 = fw;
+            return;
+        }
+
+        // Block-cached 4-bit quadratic DPCM fetcher matching `0x081DC71C`
+        let mut cached_blk: usize = usize::MAX;
+        let mut blk_buf = [0i8; DPCM_BLOCK_SAMPLES];
+        let mut fetch_dpcm = |idx: usize| -> i32 {
+            let blk = idx >> 6;
+            if blk != cached_blk {
+                cached_blk = blk;
+                let off = blk.saturating_mul(DPCM_BLOCK_BYTES);
+                if let Some(slice) = sample.pcm_bytes.get(off..off + DPCM_BLOCK_BYTES) {
+                    let _ = decode_dpcm_block(slice, &mut blk_buf);
+                } else {
+                    blk_buf.fill(0);
+                }
+            }
+            blk_buf[idx & 0x3F] as i32
+        };
+
+        if is_reverse {
+            // Reverse DPCM (`0x081DC5BC..0x081DC660`)
+            if pos == 0 {
+                return;
+            }
+            pos -= 1;
+            let mut s0 = fetch_dpcm(pos);
+            let mut s1 = if pos > 0 {
+                pos -= 1;
+                fetch_dpcm(pos)
+            } else {
+                0
+            };
+            let mut diff = s1 - s0;
+
+            for (r, l) in out_r.iter_mut().zip(out_l.iter_mut()) {
+                let interp = s0 + (((fw as i32).wrapping_mul(diff)) >> 23);
+                *r = r.wrapping_add(((interp * vr) >> 8) as i8);
+                *l = l.wrapping_add(((interp * vl) >> 8) as i8);
+
+                fw = fw.wrapping_add(step);
+                let int_step = fw >> 23;
+                if int_step != 0 {
+                    fw &= !0x3F80_0000;
+                    count = count.saturating_sub(int_step as i32);
+                    if count <= 0 {
+                        ch.envelope.status_flags = 0;
+                        ch.position = pos;
+                        ch.remaining = 0;
+                        ch.frac_q23 = fw;
+                        return;
+                    }
+                    if int_step == 1 {
+                        s0 = s1;
+                    } else {
+                        pos = pos.saturating_sub((int_step - 1) as usize);
+                        s0 = fetch_dpcm(pos);
+                    }
+                    if pos > 0 {
+                        pos -= 1;
+                        s1 = fetch_dpcm(pos);
+                    } else {
+                        s1 = 0;
+                    }
+                    diff = s1 - s0;
+                }
+            }
+            ch.position = pos.saturating_add(1);
+            ch.remaining = count.max(0) as u32;
+            ch.frac_q23 = fw;
+        } else {
+            // Forward DPCM (`0x081DC4F0..0x081DC5BC`)
+            let loop_len_usize = sample.loop_len();
+            let looped = (ch.envelope.status_flags & SF_LOOP) != 0
+                && loop_len_usize > 0
+                && loop_len_usize <= i32::MAX as usize;
+            let loop_start = sample.loop_start();
+            let loop_len = loop_len_usize as i32;
+
+            let mut s0 = fetch_dpcm(pos);
+            pos = pos.saturating_add(1);
+            let mut s1 = fetch_dpcm(pos);
+            let mut diff = s1 - s0;
+
+            for (r, l) in out_r.iter_mut().zip(out_l.iter_mut()) {
+                let interp = s0 + (((fw as i32).wrapping_mul(diff)) >> 23);
+                *r = r.wrapping_add(((interp * vr) >> 8) as i8);
+                *l = l.wrapping_add(((interp * vl) >> 8) as i8);
+
+                fw = fw.wrapping_add(step);
+                let int_step = fw >> 23;
+                if int_step != 0 {
+                    fw &= !0x3F80_0000;
+                    count = count.saturating_sub(int_step as i32);
+                    if count <= 0 {
+                        if looped {
+                            let mut lr = -count;
+                            loop {
+                                count += loop_len;
+                                if count > 0 {
+                                    break;
+                                }
+                                lr -= loop_len;
+                            }
+                            pos = loop_start + (lr as usize);
+                            s0 = fetch_dpcm(pos);
+                            pos = pos.saturating_add(1);
+                            s1 = fetch_dpcm(pos);
+                            diff = s1 - s0;
+                        } else {
+                            ch.envelope.status_flags = 0;
+                            ch.position = pos;
+                            ch.remaining = 0;
+                            ch.frac_q23 = fw;
+                            return;
+                        }
+                    } else {
+                        if int_step == 1 {
+                            s0 = s1;
+                        } else {
+                            pos = pos.saturating_add((int_step - 1) as usize);
+                            s0 = fetch_dpcm(pos);
+                        }
+                        pos = pos.saturating_add(1);
+                        s1 = fetch_dpcm(pos);
+                        diff = s1 - s0;
+                    }
+                }
+            }
+            ch.position = pos.saturating_sub(1);
+            ch.remaining = count.max(0) as u32;
+            ch.frac_q23 = fw;
+        }
+    }
+
+    /// Mono fixed-pitch 1:1 ARM mixing inner loop (`M4aMixerVariant::Mono` / `EarlyV1Mono`).
+    fn mix_fixed_mono_inner(
+        sample: &M4aSampleView<'_>,
+        ch: &mut M4aSoundChannel,
+        vol_mono: u8,
+        out: &mut [i8],
+    ) {
+        let frames = out.len();
+        if frames == 0 {
+            return;
+        }
+        let pcm = sample.pcm_bytes;
+        let vm = vol_mono as i32;
+        let looped = (ch.envelope.status_flags & SF_LOOP) != 0 && sample.loop_len() > 0;
+        let loop_start = sample.loop_start();
+        let loop_len = sample.loop_len() as u32;
+
+        let mut pos = ch.position;
+        let mut remaining = ch.remaining;
+        let mut done = 0usize;
+
+        while done < frames {
+            let run = (remaining as usize).min(frames - done);
+            if pos < pcm.len() {
+                let in_bounds = run.min(pcm.len() - pos);
+                for (o, &b) in out[done..done + in_bounds]
+                    .iter_mut()
+                    .zip(&pcm[pos..pos + in_bounds])
+                {
+                    let s = (b as i8) as i32;
+                    *o = o.wrapping_add(((s * vm) >> 8) as i8);
+                }
+            }
+            pos += run;
+            done += run;
+            remaining -= run as u32;
+
+            if remaining == 0 {
+                if looped {
+                    pos = loop_start;
+                    remaining = loop_len;
+                } else {
+                    ch.envelope.status_flags = 0;
+                    break;
+                }
+            }
+        }
+        ch.position = pos;
+        ch.remaining = remaining;
+    }
+
+    /// Mono Q23 resampled ARM mixing inner loop (`M4aMixerVariant::Mono`, e.g. `AMKE` / `BZME`).
+    fn mix_resampled_mono_inner(
+        sample: &M4aSampleView<'_>,
+        ch: &mut M4aSoundChannel,
+        div_freq: u32,
+        vol_mono: u8,
+        out: &mut [i8],
+    ) {
+        let frames = out.len();
+        if frames == 0 {
+            return;
+        }
+        let vm = vol_mono as i32;
+        let step = freq_step_q23(div_freq, ch.frequency);
+        let loop_len_usize = sample.loop_len();
+        let looped = (ch.envelope.status_flags & SF_LOOP) != 0
+            && loop_len_usize > 0
+            && loop_len_usize <= i32::MAX as usize;
+        let loop_start = sample.loop_start();
+        let loop_len = loop_len_usize as i32;
+
+        let mut pos = ch.position;
+        let mut count = ch.remaining as i32;
+        let mut fw = ch.frac_q23;
+        let mut s0 = sample.sample_i8(pos) as i32;
+        let mut s1 = sample.sample_i8(pos.saturating_add(1)) as i32;
+        let mut diff = s1 - s0;
+
+        for o in out.iter_mut() {
+            let interp = s0 + (((fw as i32).wrapping_mul(diff)) >> 23);
+            *o = o.wrapping_add(((interp * vm) >> 8) as i8);
+
+            fw = fw.wrapping_add(step);
+            let int_step = fw >> 23;
+            if int_step != 0 {
+                fw &= !0x3F80_0000;
+                count = count.saturating_sub(int_step as i32);
+                if count <= 0 {
+                    if looped {
+                        let mut lr = -count;
+                        loop {
+                            count += loop_len;
+                            if count > 0 {
+                                break;
+                            }
+                            lr -= loop_len;
+                        }
+                        pos = loop_start + (lr as usize);
+                        s0 = sample.sample_i8(pos) as i32;
+                        s1 = sample.sample_i8(pos.saturating_add(1)) as i32;
+                        diff = s1 - s0;
+                    } else {
+                        ch.envelope.status_flags = 0;
+                        ch.position = pos;
+                        ch.remaining = 0;
+                        ch.frac_q23 = fw;
+                        return;
+                    }
+                } else {
+                    pos = pos.saturating_add(int_step as usize);
+                    s0 = if int_step == 1 {
+                        s1
+                    } else {
+                        sample.sample_i8(pos) as i32
+                    };
+                    s1 = sample.sample_i8(pos.saturating_add(1)) as i32;
+                    diff = s1 - s0;
+                }
+            }
+        }
+        ch.position = pos;
+        ch.remaining = count.max(0) as u32;
+        ch.frac_q23 = fw;
+    }
+
+    /// Early 2001 SDK v1 stereo exact-Hz modulo resampler (`A22J` `0x0801ABC4`).
+    #[allow(clippy::too_many_arguments)]
+    fn mix_early_v1_stereo_inner(
+        sample: &M4aSampleView<'_>,
+        ch: &mut M4aSoundChannel,
+        sample_rate: u32,
+        div_freq: u32,
+        vol_r: u8,
+        vol_l: u8,
+        out_r: &mut [i8],
+        out_l: &mut [i8],
+    ) {
+        let frames = out_r.len().min(out_l.len());
+        if frames == 0 || sample_rate == 0 {
+            return;
+        }
+        let vr = vol_r as i32;
+        let vl = vol_l as i32;
+        let df = div_freq as i32;
+        let looped = (ch.envelope.status_flags & SF_LOOP) != 0 && sample.loop_len() > 0;
+        let loop_start = sample.loop_start();
+        let loop_len = sample.loop_len() as u32;
+
+        let mut pos = ch.position;
+        let mut remaining = ch.remaining;
+        let mut fw = ch.frac_q23;
+
+        for (r, l) in out_r[..frames].iter_mut().zip(&mut out_l[..frames]) {
+            while fw >= sample_rate {
+                fw -= sample_rate;
+                remaining = remaining.saturating_sub(1);
+                if remaining == 0 {
+                    if looped {
+                        pos = loop_start;
+                        remaining = loop_len;
+                    } else {
+                        ch.envelope.status_flags = 0;
+                        ch.position = pos;
+                        ch.remaining = 0;
+                        ch.frac_q23 = fw;
+                        return;
+                    }
+                } else {
+                    pos = pos.saturating_add(1);
+                }
+            }
+            let s0 = sample.sample_i8(pos) as i32;
+            let s1 = sample.sample_i8(pos.saturating_add(1)) as i32;
+            let diff = s1 - s0;
+            // Exact ARM: `mul r6, r1, r7; mul r1, r6, ip; add r6, r0, r1, asr #23`
+            let interp = s0 + (diff.wrapping_mul(fw as i32).wrapping_mul(df) >> 23);
+            *r = r.wrapping_add(((interp * vr) >> 8) as i8);
+            *l = l.wrapping_add(((interp * vl) >> 8) as i8);
+            fw = fw.wrapping_add(ch.frequency);
+        }
+
+        ch.position = pos;
+        ch.remaining = remaining;
+        ch.frac_q23 = fw;
+    }
+
+    /// Early 2001 SDK v1 mono exact-Hz modulo resampler (`AD2J` `0x08012766`).
+    fn mix_early_v1_mono_inner(
+        sample: &M4aSampleView<'_>,
+        ch: &mut M4aSoundChannel,
+        sample_rate: u32,
+        div_freq: u32,
+        vol_mono: u8,
+        out: &mut [i8],
+    ) {
+        if out.is_empty() || sample_rate == 0 {
+            return;
+        }
+        let vm = vol_mono as i32;
+        let df = div_freq as i32;
+        let looped = (ch.envelope.status_flags & SF_LOOP) != 0 && sample.loop_len() > 0;
+        let loop_start = sample.loop_start();
+        let loop_len = sample.loop_len() as u32;
+
+        let mut pos = ch.position;
+        let mut remaining = ch.remaining;
+        let mut fw = ch.frac_q23;
+
+        for o in out.iter_mut() {
+            while fw >= sample_rate {
+                fw -= sample_rate;
+                remaining = remaining.saturating_sub(1);
+                if remaining == 0 {
+                    if looped {
+                        pos = loop_start;
+                        remaining = loop_len;
+                    } else {
+                        ch.envelope.status_flags = 0;
+                        ch.position = pos;
+                        ch.remaining = 0;
+                        ch.frac_q23 = fw;
+                        return;
+                    }
+                } else {
+                    pos = pos.saturating_add(1);
+                }
+            }
+            let s0 = sample.sample_i8(pos) as i32;
+            let s1 = sample.sample_i8(pos.saturating_add(1)) as i32;
+            let diff = s1 - s0;
+            let interp = s0 + (diff.wrapping_mul(fw as i32).wrapping_mul(df) >> 23);
+            *o = o.wrapping_add(((interp * vm) >> 8) as i8);
+            fw = fw.wrapping_add(ch.frequency);
+        }
+
+        ch.position = pos;
+        ch.remaining = remaining;
+        ch.frac_q23 = fw;
     }
 }
 

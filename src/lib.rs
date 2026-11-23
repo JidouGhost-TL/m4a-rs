@@ -42,10 +42,16 @@ pub use freq::{
     div_freq_for_rate, freq_step_q23, midi_key_to_freq, samples_per_vblank, M4A_RATE_TABLE,
 };
 #[cfg(feature = "alloc")]
-pub use sample::M4aSample;
-pub use sample::{M4aSampleView, WaveDataHeader, WAVE_DATA_HEADER_SIZE};
+pub use sample::{decode_dpcm_vec, M4aSample};
+pub use sample::{
+    decode_dpcm_block, decode_dpcm_into, dpcm_encoded_len, M4aSampleView, WaveDataHeader,
+    DPCM_BLOCK_BYTES, DPCM_BLOCK_SAMPLES, DPCM_DELTA_TABLE, WAVE_DATA_HEADER_SIZE,
+};
 pub use sequence::{
     M4aChannel, M4aEvent, M4aVoice, SongHeaderView, TrackDecoder, VoiceKind, CLOCK_TABLE,
     VOICE_ENTRY_SIZE,
 };
-pub use synth::{AccuracySynth, M4aSoundChannel, StudioSynth, PCM_DMA_BUF_SIZE};
+pub use synth::{
+    detect_mixer_variant, AccuracySynth, M4aMixerVariant, M4aSoundChannel, StudioSynth,
+    PCM_DMA_BUF_SIZE, RD1_DMA_BUF_SIZE,
+};

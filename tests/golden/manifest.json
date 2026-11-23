@@ -110,5 +110,123 @@
       "frames_per_channel": 224,
       "mode": "resampled_q23_linear"
     }
+  },
+  "tier4_multi_variant_corpus": {
+    "synth_pcm_512": {
+      "filename": "synth_pcm_512.wavdata",
+      "size": 532,
+      "mode": "synthetic_clean_room_pcm"
+    },
+    "synth_dpcm_384": {
+      "filename": "synth_dpcm_384.wavdata",
+      "size": 214,
+      "mode": "synthetic_clean_room_4bit_dpcm"
+    },
+    "agse_std_resampled": {
+      "title": "Golden Sun (AGSE)",
+      "variant": "Standard",
+      "sound_main_ram_addr": "0x080F9674",
+      "filename": "agse_std_resampled.bin",
+      "size": 448,
+      "mode": "resampled_q23_linear"
+    },
+    "a3uj_std_resampled": {
+      "title": "Mother 3 (A3UJ)",
+      "variant": "Standard",
+      "sound_main_ram_addr": "0x0808ED80",
+      "filename": "a3uj_std_resampled.bin",
+      "size": 448,
+      "mode": "resampled_q23_linear"
+    },
+    "bpre_dpcm_forward": {
+      "title": "Pokemon FireRed (BPRE)",
+      "variant": "PokemonGen3",
+      "sound_main_ram_addr": "0x081DC0A4",
+      "filename": "bpre_dpcm_forward.bin",
+      "size": 448,
+      "mode": "4bit_quadratic_dpcm_forward"
+    },
+    "bpre_reverse_pcm": {
+      "title": "Pokemon FireRed (BPRE)",
+      "variant": "PokemonGen3",
+      "sound_main_ram_addr": "0x081DC0A4",
+      "filename": "bpre_reverse_pcm.bin",
+      "size": 448,
+      "mode": "reverse_pcm_q23"
+    },
+    "bpre_reverse_dpcm": {
+      "title": "Pokemon FireRed (BPRE)",
+      "variant": "PokemonGen3",
+      "sound_main_ram_addr": "0x081DC0A4",
+      "filename": "bpre_reverse_dpcm.bin",
+      "size": 448,
+      "mode": "reverse_4bit_dpcm_q23"
+    },
+    "amke_mono_resampled": {
+      "title": "Mario Kart: Super Circuit (AMKE) / Zelda: Minish Cap (BZME)",
+      "variant": "Mono",
+      "sound_main_ram_addr": "0x0805F2F4",
+      "filename": "amke_mono_resampled.bin",
+      "size": 224,
+      "mode": "mono_resampled_q23"
+    },
+    "amke_mono_reverb": {
+      "title": "Mario Kart: Super Circuit (AMKE)",
+      "variant": "Mono",
+      "sound_main_ram_addr": "0x0805F2F4",
+      "filename": "amke_mono_reverb.bin",
+      "size": 224,
+      "reverb": 64,
+      "mode": "mono_reverb_feedback_3ticks"
+    },
+    "a22j_early_v1_stereo": {
+      "title": "EZ-Talk (A22J)",
+      "variant": "EarlyV1Stereo",
+      "sound_main_ram_addr": "0x0801ABC4",
+      "filename": "a22j_early_v1_stereo.bin",
+      "size": 448,
+      "mode": "early_v1_exact_hz_modulo_stereo"
+    },
+    "ad2j_early_v1_mono": {
+      "title": "Mr. Driller 2 (AD2J)",
+      "variant": "EarlyV1Mono",
+      "sound_main_ram_addr": "0x08012766",
+      "filename": "ad2j_early_v1_mono.bin",
+      "size": 224,
+      "mode": "early_v1_exact_hz_modulo_mono"
+    },
+    "amte_rd1_q14": {
+      "title": "Metroid Fusion (AMTE) / Metroid: Zero Mission (BMXE)",
+      "variant": "MetroidRd1",
+      "sound_main_ram_addr": "0x08003EBC",
+      "filename": "amte_rd1_q14.bin",
+      "size": 448,
+      "mode": "rd1_32bit_q14_linear"
+    },
+    "amte_rd1_fixed": {
+      "title": "Metroid Fusion (AMTE) / Metroid: Zero Mission (BMXE)",
+      "variant": "MetroidRd1",
+      "sound_main_ram_addr": "0x08003EBC",
+      "filename": "amte_rd1_fixed.bin",
+      "size": 448,
+      "mode": "rd1_32bit_fixed_1to1"
+    },
+    "amte_rd1_reverse": {
+      "title": "Metroid Fusion (AMTE) / Metroid: Zero Mission (BMXE)",
+      "variant": "MetroidRd1",
+      "sound_main_ram_addr": "0x08003EBC",
+      "filename": "amte_rd1_reverse.bin",
+      "size": 448,
+      "mode": "rd1_32bit_reverse_q14"
+    },
+    "amte_rd1_reverb_clamp": {
+      "title": "Metroid Fusion (AMTE) / Metroid: Zero Mission (BMXE)",
+      "variant": "MetroidRd1",
+      "sound_main_ram_addr": "0x08003D68",
+      "filename": "amte_rd1_reverb_clamp.bin",
+      "size": 448,
+      "reverb": 64,
+      "mode": "rd1_reverb_multivoice_9bit_clamp"
+    }
   }
 }

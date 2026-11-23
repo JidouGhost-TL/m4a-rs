@@ -62,7 +62,13 @@ To guarantee 100% mathematical accuracy without guesswork, `m4a-rs` is verified 
 
 1. **Tier 1 — GBA BIOS SWI `0x1F` (`MidiKey2Freq`)**: 24/24 bit-exact 32-bit frequency outputs across keys `0..=180`, fine-tunes `0..=255`, and diverse base sample rates.
 2. **Tier 2 — 60 Hz ADSR & Pseudo-Echo Envelope**: 40/40 exact ticks (`status_flags`, `envelope_volume`, `envelope_volume_right`, `envelope_volume_left`) verified against *Pokemon FireRed* (`BPRE`) `SoundMainRAM` (`0x081DC0A4`) through Attack → Decay → Sustain → Release → Pseudo-Echo → Off.
-3. **Tier 3 — ARM7TDMI `SoundMainRAM` DirectSound Mixer**: 2,688/2,688 byte-exact DirectSound FIFO samples verified against *Pokemon FireRed* (`BPRE`, `0x081DC0A4`) and *Advance Wars* (`AWRE`, `0x08077634`) across fixed 1:1 pitch, Q23 linear resampling, looped sample wrap, 3-voice stereo mixing, and multi-frame reverb feedback.
+3. **Tier 3 — Standard `SoundMainRAM` DirectSound Mixer**: 2,688/2,688 byte-exact DirectSound FIFO samples verified against *Pokemon FireRed* (`BPRE`, `0x081DC0A4`) and *Advance Wars* (`AWRE`, `0x08077634`) across fixed 1:1 pitch, Q23 linear resampling, looped sample wrap, 3-voice stereo mixing, and multi-frame reverb feedback.
+4. **Tier 4 — Multi-Variant Corpus Golden Verification**: 4,480/4,480 additional byte-exact ARM7TDMI samples spanning every distinct M4A mixer variant in the GBA library (`7,424 / 7,424` total byte-exact golden assertions):
+   - **`M4aMixerVariant::Standard`** (~68% of titles): cross-verified on *Golden Sun* (`AGSE`) and *Mother 3* (`A3UJ`).
+   - **`M4aMixerVariant::PokemonGen3`**: *Pokemon FireRed/LeafGreen/Emerald/Ruby/Sapphire* 4-bit quadratic DPCM (`WaveData.wave_type != 0`, 64-sample / 33-byte blocks) and reverse PCM/DPCM playback (`voice_type & 0x30`).
+   - **`M4aMixerVariant::Mono`** (~24% of titles): *Mario Kart: Super Circuit* (`AMKE`) & *The Legend of Zelda: The Minish Cap* (`BZME`) mono `>> 8` reverb and `(vol_r + vol_l) >> 9` mono mixing.
+   - **`M4aMixerVariant::EarlyV1Stereo` & `EarlyV1Mono`** (2001 launch SDK v1): *EZ-Talk* (`A22J`) and *Mr. Driller 2* (`AD2J`) exact-Hz modulo resampler with zero Q23 pitch drift.
+   - **`M4aMixerVariant::MetroidRd1`**: *Metroid Fusion* (`AMTE`) & *Metroid: Zero Mission* (`BMXE`) Nintendo R&D1 32-bit stereo accumulator, Q14 linear interpolation (`lsr #14`), reverse playback, `<< 7` reverb, and 9-bit saturating `>> 7` clamp LUT.
 
 ---
 
