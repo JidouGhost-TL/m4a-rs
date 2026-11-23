@@ -45,6 +45,7 @@ pub use freq::{
 pub use sample::M4aSample;
 pub use sample::{M4aSampleView, WaveDataHeader, WAVE_DATA_HEADER_SIZE};
 pub use sequence::{
-    M4aChannel, M4aEvent, M4aVoice, SongHeaderView, VoiceKind, CLOCK_TABLE, VOICE_ENTRY_SIZE,
+    M4aChannel, M4aEvent, M4aVoice, SongHeaderView, TrackDecoder, VoiceKind, CLOCK_TABLE,
+    VOICE_ENTRY_SIZE,
 };
 pub use synth::{AccuracySynth, M4aSoundChannel, StudioSynth, PCM_DMA_BUF_SIZE};

@@ -16,12 +16,12 @@
 //!   5. Multi-frame reverb feedback (`reverb = 64`) with negative-bias correction
 //!   6. Cross-title verification on *Advance Wars* (`AWRE`)
 
-use m4a::sequence::TrackDecoder;
 #[cfg(feature = "alloc")]
 use m4a::M4aSample;
 use m4a::{
     div_freq_for_rate, midi_key_to_freq, samples_per_vblank, AccuracySynth, EnvelopeStage,
-    M4aEnvelope, M4aEvent, M4aSampleView, M4aSoundChannel, StudioSynth, M4A_RATE_TABLE,
+    M4aEnvelope, M4aEvent, M4aSampleView, M4aSoundChannel, StudioSynth, TrackDecoder,
+    WaveDataHeader, M4A_RATE_TABLE,
 };
 
 const MANIFEST_JSON: &str = include_str!("golden/manifest.json");
@@ -330,6 +330,50 @@ fn test_studio_synth_48khz_band_limited() {
     let energy_l: f32 = out_l.iter().map(|x| x * x).sum();
     let energy_r: f32 = out_r.iter().map(|x| x * x).sum();
     assert!(energy_l > energy_r * 2.0, "pan=0.25 should favor left channel");
+
+    // Verify DC preservation of the precomputed normalized Lanczos-4 polyphase LUT
+    let dc_pcm = [64u8; 64];
+    let dc_hdr = WaveDataHeader {
+        wave_type: 0,
+        stat: 0,
+        flags: 0x40,
+        base_freq_q10: 13_700_096,
+        loop_start: 0,
+        size: 64,
+    };
+    let dc_sample = M4aSampleView::from_parts(dc_hdr, &dc_pcm).unwrap();
+    let mut dc_l = [0.0f32; 64];
+    let mut dc_r = [0.0f32; 64];
+    let mut dc_phase = 10.125f64;
+    assert!(StudioSynth::mix_voice_f32(
+        &dc_sample,
+        &mut dc_phase,
+        13_379.0,
+        StudioSynth::SAMPLE_RATE,
+        1.0,
+        0.0, // hard left: gain_l = 1.0, gain_r = 0.0
+        &mut dc_l,
+        &mut dc_r,
+    ));
+    for &v in &dc_l {
+        assert!((v - 0.5).abs() < 1e-4, "expected DC 0.5, got {v}");
+    }
+    for &v in &dc_r {
+        assert!(v.abs() < 1e-6, "expected hard-left right=0.0, got {v}");
+    }
+
+    // Verify NaN phase is rejected gracefully without panic
+    let mut nan_phase = f64::NAN;
+    assert!(!StudioSynth::mix_voice_f32(
+        &dc_sample,
+        &mut nan_phase,
+        13_379.0,
+        StudioSynth::SAMPLE_RATE,
+        1.0,
+        0.5,
+        &mut dc_l,
+        &mut dc_r,
+    ));
 }
 
 #[test]

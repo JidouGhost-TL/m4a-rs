@@ -142,18 +142,15 @@ impl<'a> SongHeaderView<'a> {
     }
 
     /// Return the 32-bit GBA ROM bus pointer for track `index`.
+    #[inline]
     #[must_use]
     pub fn track_ptr(&self, index: usize) -> Option<u32> {
         if index >= self.track_count as usize {
             return None;
         }
-        let off = index * 4;
-        Some(u32::from_le_bytes([
-            self.track_ptr_bytes[off],
-            self.track_ptr_bytes[off + 1],
-            self.track_ptr_bytes[off + 2],
-            self.track_ptr_bytes[off + 3],
-        ]))
+        let off = index.checked_mul(4)?;
+        let chunk = self.track_ptr_bytes.get(off..off + 4)?;
+        Some(u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
     }
 }
 
@@ -282,30 +279,31 @@ impl<'a> TrackDecoder<'a> {
     }
 
     /// Current byte offset within the track slice.
+    #[inline]
     #[must_use]
     pub const fn position(&self) -> usize {
         self.pos
     }
 
+    #[inline]
+    fn peek_u8(&self) -> Option<u8> {
+        self.bytes.get(self.pos).copied()
+    }
+
+    #[inline]
     fn read_u8(&mut self) -> Result<u8> {
-        if self.pos >= self.bytes.len() {
-            return Err(Error::UnexpectedEof);
-        }
-        let b = self.bytes[self.pos];
+        let b = self.peek_u8().ok_or(Error::UnexpectedEof)?;
         self.pos += 1;
         Ok(b)
     }
 
+    #[inline]
     fn read_u32_le(&mut self) -> Result<u32> {
-        if self.pos + 4 > self.bytes.len() {
+        if self.bytes.len().saturating_sub(self.pos) < 4 {
             return Err(Error::UnexpectedEof);
         }
-        let v = u32::from_le_bytes([
-            self.bytes[self.pos],
-            self.bytes[self.pos + 1],
-            self.bytes[self.pos + 2],
-            self.bytes[self.pos + 3],
-        ]);
+        let chunk = &self.bytes[self.pos..self.pos + 4];
+        let v = u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
         self.pos += 4;
         Ok(v)
     }
@@ -347,7 +345,7 @@ impl<'a> TrackDecoder<'a> {
             0xCD => {
                 self.running_cmd = Some(byte);
                 let sub_cmd = self.read_u8()?;
-                let arg0 = if self.pos < self.bytes.len() && self.bytes[self.pos] < 0x80 {
+                let arg0 = if matches!(self.peek_u8(), Some(b) if b < 0x80) {
                     self.read_u8()?
                 } else {
                     0
@@ -355,7 +353,7 @@ impl<'a> TrackDecoder<'a> {
                 if sub_cmd == 0x08 {
                     // Skip remaining 2 args of 3-byte extended command if present
                     for _ in 0..2 {
-                        if self.pos < self.bytes.len() && self.bytes[self.pos] < 0x80 {
+                        if matches!(self.peek_u8(), Some(b) if b < 0x80) {
                             let _ = self.read_u8()?;
                         }
                     }
@@ -364,7 +362,7 @@ impl<'a> TrackDecoder<'a> {
             }
             0xCE => {
                 self.running_cmd = Some(byte);
-                let key = if self.pos < self.bytes.len() && self.bytes[self.pos] < 0x80 {
+                let key = if matches!(self.peek_u8(), Some(b) if b < 0x80) {
                     let k = self.read_u8()?;
                     self.last_key = k;
                     Some(k)
@@ -375,9 +373,9 @@ impl<'a> TrackDecoder<'a> {
             }
             0xCF => {
                 self.running_cmd = Some(byte);
-                if self.pos < self.bytes.len() && self.bytes[self.pos] < 0x80 {
+                if matches!(self.peek_u8(), Some(b) if b < 0x80) {
                     self.last_key = self.read_u8()?;
-                    if self.pos < self.bytes.len() && self.bytes[self.pos] < 0x80 {
+                    if matches!(self.peek_u8(), Some(b) if b < 0x80) {
                         self.last_velocity = self.read_u8()?;
                     }
                 }
@@ -389,11 +387,11 @@ impl<'a> TrackDecoder<'a> {
             0xD0..=0xFF => {
                 self.running_cmd = Some(byte);
                 let mut length = CLOCK_TABLE[(byte - 0xCF) as usize];
-                if self.pos < self.bytes.len() && self.bytes[self.pos] < 0x80 {
+                if matches!(self.peek_u8(), Some(b) if b < 0x80) {
                     self.last_key = self.read_u8()?;
-                    if self.pos < self.bytes.len() && self.bytes[self.pos] < 0x80 {
+                    if matches!(self.peek_u8(), Some(b) if b < 0x80) {
                         self.last_velocity = self.read_u8()?;
-                        if self.pos < self.bytes.len() && self.bytes[self.pos] <= 3 {
+                        if matches!(self.peek_u8(), Some(b) if b <= 3) {
                             length = length.saturating_add(self.read_u8()?);
                         }
                     }
@@ -437,7 +435,7 @@ impl<'a> TrackDecoder<'a> {
             }
             0xCF => {
                 self.last_key = first_byte;
-                if self.pos < self.bytes.len() && self.bytes[self.pos] < 0x80 {
+                if matches!(self.peek_u8(), Some(b) if b < 0x80) {
                     self.last_velocity = self.read_u8()?;
                 }
                 Ok(M4aEvent::Tie {
@@ -448,9 +446,9 @@ impl<'a> TrackDecoder<'a> {
             0xD0..=0xFF => {
                 let mut length = CLOCK_TABLE[(cmd - 0xCF) as usize];
                 self.last_key = first_byte;
-                if self.pos < self.bytes.len() && self.bytes[self.pos] < 0x80 {
+                if matches!(self.peek_u8(), Some(b) if b < 0x80) {
                     self.last_velocity = self.read_u8()?;
-                    if self.pos < self.bytes.len() && self.bytes[self.pos] <= 3 {
+                    if matches!(self.peek_u8(), Some(b) if b <= 3) {
                         length = length.saturating_add(self.read_u8()?);
                     }
                 }

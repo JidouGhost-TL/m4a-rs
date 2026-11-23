@@ -56,12 +56,14 @@ impl WaveDataHeader {
 
     /// Returns `true` if the `WaveData` loop flag (`flags & 0xC0 != 0`) is set,
     /// matching `SoundMainRAM`'s `tst r0, #0xC0` check.
+    #[inline]
     #[must_use]
     pub const fn is_looped(&self) -> bool {
         (self.flags & 0xC0) != 0
     }
 
     /// Base playback frequency in Hz (`base_freq_q10 / 1024`).
+    #[inline]
     #[must_use]
     pub const fn base_sample_rate_hz(&self) -> u32 {
         self.base_freq_q10 >> 10
@@ -101,30 +103,35 @@ impl<'a> M4aSampleView<'a> {
     }
 
     /// Logical sample length (`header.size`).
+    #[inline]
     #[must_use]
     pub const fn len(&self) -> usize {
         self.header.size as usize
     }
 
     /// Returns `true` if the sample has zero length.
+    #[inline]
     #[must_use]
     pub const fn is_empty(&self) -> bool {
         self.header.size == 0
     }
 
     /// Returns `true` if looping is enabled.
+    #[inline]
     #[must_use]
     pub const fn is_looped(&self) -> bool {
         self.header.is_looped()
     }
 
     /// Loop start index in samples.
+    #[inline]
     #[must_use]
     pub const fn loop_start(&self) -> usize {
         self.header.loop_start as usize
     }
 
     /// Loop length (`size - loop_start`).
+    #[inline]
     #[must_use]
     pub const fn loop_len(&self) -> usize {
         self.header.size.saturating_sub(self.header.loop_start) as usize
@@ -138,10 +145,12 @@ impl<'a> M4aSampleView<'a> {
         self.pcm_bytes.get(index).copied().unwrap_or(0) as i8
     }
 
-    /// Logical PCM byte slice (`&pcm_bytes[..len()]`).
+    /// Logical PCM byte slice (`&pcm_bytes[..len().min(pcm_bytes.len())]`).
+    #[inline]
     #[must_use]
     pub fn logical_pcm_bytes(&self) -> &'a [u8] {
-        &self.pcm_bytes[..self.len()]
+        let end = self.len().min(self.pcm_bytes.len());
+        &self.pcm_bytes[..end]
     }
 
     /// Returns `true` if every logical sample is zero.
@@ -153,9 +162,13 @@ impl<'a> M4aSampleView<'a> {
     /// Compute `(min, max)` signed 8-bit amplitude across the logical PCM payload.
     #[must_use]
     pub fn min_max(&self) -> (i8, i8) {
+        let logical = self.logical_pcm_bytes();
+        if logical.is_empty() {
+            return (0, 0);
+        }
         let mut min_v = i8::MAX;
         let mut max_v = i8::MIN;
-        for &b in self.logical_pcm_bytes() {
+        for &b in logical {
             let s = b as i8;
             if s < min_v {
                 min_v = s;
@@ -164,10 +177,17 @@ impl<'a> M4aSampleView<'a> {
                 max_v = s;
             }
         }
-        if self.is_empty() {
-            (0, 0)
-        } else {
-            (min_v, max_v)
+        (min_v, max_v)
+    }
+
+    /// Copy the logical PCM payload into an owned [`M4aSample`].
+    #[cfg(feature = "alloc")]
+    #[must_use]
+    pub fn to_owned_sample(&self) -> M4aSample {
+        let pcm_data = self.logical_pcm_bytes().iter().map(|&b| b as i8).collect();
+        M4aSample {
+            header: self.header,
+            pcm_data,
         }
     }
 }
@@ -184,28 +204,55 @@ pub struct M4aSample {
 impl M4aSample {
     /// Parse and copy a `WaveData` sample into an owned [`M4aSample`].
     pub fn from_wavdata_bytes(bytes: &[u8]) -> Result<Self> {
-        let view = M4aSampleView::from_wavdata_bytes(bytes)?;
-        let pcm_data = view
-            .logical_pcm_bytes()
-            .iter()
-            .map(|&b| b as i8)
-            .collect();
-        Ok(Self {
-            header: view.header,
-            pcm_data,
-        })
+        Ok(M4aSampleView::from_wavdata_bytes(bytes)?.to_owned_sample())
     }
 
     /// Number of samples.
+    #[inline]
     #[must_use]
     pub fn len(&self) -> usize {
         self.pcm_data.len()
     }
 
     /// Returns `true` if empty.
+    #[inline]
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.pcm_data.is_empty()
+    }
+
+    /// Returns `true` if looping is enabled.
+    #[inline]
+    #[must_use]
+    pub const fn is_looped(&self) -> bool {
+        self.header.is_looped()
+    }
+
+    /// Loop start index in samples.
+    #[inline]
+    #[must_use]
+    pub const fn loop_start(&self) -> usize {
+        self.header.loop_start as usize
+    }
+
+    /// Loop length (`size - loop_start`).
+    #[inline]
+    #[must_use]
+    pub const fn loop_len(&self) -> usize {
+        self.header.size.saturating_sub(self.header.loop_start) as usize
+    }
+
+    /// Read a signed 8-bit PCM sample at `index`, returning `0` if out of bounds.
+    #[inline]
+    #[must_use]
+    pub fn sample_i8(&self, index: usize) -> i8 {
+        self.pcm_data.get(index).copied().unwrap_or(0)
+    }
+
+    /// Returns `true` if every sample is zero.
+    #[must_use]
+    pub fn is_silent(&self) -> bool {
+        self.pcm_data.iter().all(|&s| s == 0)
     }
 
     /// Compute `(min, max)` signed 8-bit amplitude.

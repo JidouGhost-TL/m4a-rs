@@ -31,6 +31,7 @@ const LN2_OVER_3072_Q40: u128 = 248_087_468;
 /// `#![no_std]` fixed-point integer arithmetic.
 ///
 /// Verified bit-for-bit (24/24) against mGBA's `GBASwi16(cpu, 0x1F)`.
+#[inline]
 #[must_use]
 pub const fn midi_key_to_freq(base_freq_q10: u32, key: u8, fine_tune: u8) -> u32 {
     if key >= 180 {
@@ -49,7 +50,8 @@ pub const fn midi_key_to_freq(base_freq_q10: u32, key: u8, fine_tune: u8) -> u32
     let x = frac * LN2_OVER_3072_Q40;
     let t1 = x;
     let t2 = (x * x) >> 41;
-    let t3 = (t2 * x) / (3u128 << 40);
+    // floor(floor(a / 2^40) / 3) == floor(a / (3 * 2^40)); avoids 128-bit division.
+    let t3 = (((t2 * x) >> 40) as u64 / 3) as u128;
     let t4 = (t3 * x) >> 42;
     let fine_q40 = (1u128 << 40) - t1 + t2 - t3 + t4;
 
@@ -66,6 +68,7 @@ pub const fn midi_key_to_freq(base_freq_q10: u32, key: u8, fine_tune: u8) -> u32
 ///
 /// In Nintendo's M4A driver, `SoundMainRAM` multiplies `divFreq` by `channel.frequency`
 /// to obtain the Q23 fractional phase step per output sample.
+#[inline]
 #[must_use]
 pub const fn div_freq_for_rate(sample_rate: u32) -> u32 {
     if sample_rate == 0 {
@@ -76,6 +79,7 @@ pub const fn div_freq_for_rate(sample_rate: u32) -> u32 {
 
 /// Compute the exact Q23 phase increment (`div_freq * channel_freq`) used in
 /// `SoundMainRAM`'s resampled ARM mixing loop (`mul r4, ip, r1`).
+#[inline]
 #[must_use]
 pub const fn freq_step_q23(div_freq: u32, channel_freq: u32) -> u32 {
     div_freq.wrapping_mul(channel_freq)
@@ -83,6 +87,7 @@ pub const fn freq_step_q23(div_freq: u32, channel_freq: u32) -> u32 {
 
 /// Compute the standard number of DirectSound PCM samples mixed per 59.7275 Hz VBlank
 /// (rounded to a multiple of 16 as in Nintendo's `m4aSoundMode`).
+#[inline]
 #[must_use]
 pub const fn samples_per_vblank(sample_rate: u32) -> usize {
     // GBA VBlank period is 280,896 CPU cycles (16,777,216 / 280,896 ≈ 59.7275 Hz).
