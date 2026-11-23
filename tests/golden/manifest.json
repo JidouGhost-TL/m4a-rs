@@ -1,0 +1,114 @@
+{
+  "description": "Byte-exact mGBA ARM7TDMI golden reference fixtures for Nintendo MusicPlayer2000 (M4A / Sappy) Sound Engine (m4a-rs)",
+  "samples": {
+    "bpre_sample_084b0634": {
+      "title": "Pokemon FireRed (BPRE)",
+      "rom_addr": "0x084B0634",
+      "filename": "bpre_sample_084b0634.wavdata",
+      "size": 1242,
+      "sha256": "fae3c889755a9da8f2439a8a0c861c28ffcf1c1d96ea31f9407a198909e13009",
+      "looped": false,
+      "base_freq_q10": 13700096,
+      "pcm_len": 1222
+    },
+    "bpre_sample_08502768": {
+      "title": "Pokemon FireRed (BPRE)",
+      "rom_addr": "0x08502768",
+      "filename": "bpre_sample_08502768.wavdata",
+      "size": 1998,
+      "sha256": "a50c6b3831b8413332334dfb0dd26c222a3b2fb857585e51f3b9bb576f3d6e80",
+      "looped": true,
+      "loop_start": 213,
+      "base_freq_q10": 13700096,
+      "pcm_len": 1978
+    },
+    "awre_sample_0814be54": {
+      "title": "Advance Wars (AWRE)",
+      "rom_addr": "0x0814BE54",
+      "filename": "awre_sample_0814be54.wavdata",
+      "size": 1764,
+      "sha256": "c77f88bcf876daf5f1115dce29b938f719a4413c0e00d42a0c2a9fb5d4ec282f",
+      "looped": true,
+      "loop_start": 41,
+      "base_freq_q10": 13700096,
+      "pcm_len": 1744
+    }
+  },
+  "tier1_bios_freq": {
+    "midi_key_to_freq": {
+      "swi": "0x1F",
+      "filename": "midi_key_to_freq.bin",
+      "size": 96,
+      "sha256": "8fb2ef445d3a3a271900e6a7eee8a554499b6ff1cdbe754c96e5f3c09096c1af",
+      "entries": 24
+    }
+  },
+  "tier2_adsr": {
+    "bpre_adsr_trace": {
+      "title": "Pokemon FireRed (BPRE)",
+      "sound_main_ram_addr": "0x081DC0A4",
+      "filename": "bpre_adsr_trace.bin",
+      "size": 160,
+      "sha256": "9cedfd0ff96c51da232f06aff16ddb12b825e8dbea16d0fd9c301e5b909b38f2",
+      "ticks": 40
+    }
+  },
+  "tier3_arm_mixer": {
+    "bpre_mix_fixed_1to1": {
+      "title": "Pokemon FireRed (BPRE)",
+      "sound_main_ram_addr": "0x081DC0A4",
+      "filename": "bpre_mix_fixed_1to1.bin",
+      "size": 448,
+      "sha256": "e75377d091d88c4e07d52e6d3022e8c60d68592e83d33df4ea783f85d02ef896",
+      "frames_per_channel": 224,
+      "mode": "fixed_1to1"
+    },
+    "bpre_mix_resampled": {
+      "title": "Pokemon FireRed (BPRE)",
+      "sound_main_ram_addr": "0x081DC0A4",
+      "filename": "bpre_mix_resampled.bin",
+      "size": 448,
+      "sha256": "e6e88d51b3876e5867eb01267bab5cc26fa4509cd6c3bfe64492c5a17231c078",
+      "frames_per_channel": 224,
+      "mode": "resampled_q23_linear"
+    },
+    "bpre_mix_looped": {
+      "title": "Pokemon FireRed (BPRE)",
+      "sound_main_ram_addr": "0x081DC0A4",
+      "filename": "bpre_mix_looped.bin",
+      "size": 448,
+      "sha256": "c4446e7907c44e5c83c7fe2be5c91e3a1aab7d665722079d5ca25143a838f09c",
+      "frames_per_channel": 224,
+      "mode": "resampled_loop_wrap"
+    },
+    "bpre_mix_multivoice": {
+      "title": "Pokemon FireRed (BPRE)",
+      "sound_main_ram_addr": "0x081DC0A4",
+      "filename": "bpre_mix_multivoice.bin",
+      "size": 448,
+      "sha256": "76957503793c71eefc7db01bab8b824eb402ffee02e9c49d32a91e9172a12ee5",
+      "frames_per_channel": 224,
+      "voices": 3,
+      "mode": "multivoice_stereo"
+    },
+    "bpre_mix_reverb": {
+      "title": "Pokemon FireRed (BPRE)",
+      "sound_main_ram_addr": "0x081DC0A4",
+      "filename": "bpre_mix_reverb.bin",
+      "size": 448,
+      "sha256": "e95a4fd1ea69aa01f99e9490be71dfa7bd33a95a65a30e85685c453b4d836365",
+      "frames_per_channel": 224,
+      "reverb": 64,
+      "mode": "reverb_feedback_3ticks"
+    },
+    "awre_mix_resampled": {
+      "title": "Advance Wars (AWRE)",
+      "sound_main_ram_addr": "0x08077634",
+      "filename": "awre_mix_resampled.bin",
+      "size": 448,
+      "sha256": "42a49088f6e496d00aa92873768769b0e6f7060ab7e35de092ff72f925546553",
+      "frames_per_channel": 224,
+      "mode": "resampled_q23_linear"
+    }
+  }
+}
