@@ -21,7 +21,9 @@ pub const DPCM_DELTA_TABLE: [i8; 16] = [
 #[inline]
 #[must_use]
 pub const fn dpcm_encoded_len(sample_count: usize) -> usize {
-    sample_count.div_ceil(DPCM_BLOCK_SAMPLES) * DPCM_BLOCK_BYTES
+    sample_count
+        .div_ceil(DPCM_BLOCK_SAMPLES)
+        .saturating_mul(DPCM_BLOCK_BYTES)
 }
 
 /// Decode a single 33-byte Pokemon Gen 3 4-bit quadratic DPCM block into 64 signed 8-bit PCM samples.
@@ -61,7 +63,7 @@ pub fn decode_dpcm_into(compressed: &[u8], out: &mut [i8]) -> Result<usize> {
         return Ok(0);
     }
     let blocks_needed = out.len().div_ceil(DPCM_BLOCK_SAMPLES);
-    if compressed.len() < blocks_needed * DPCM_BLOCK_BYTES {
+    if compressed.len() < blocks_needed.saturating_mul(DPCM_BLOCK_BYTES) {
         return Err(Error::UnexpectedEof);
     }
     let mut tmp = [0i8; DPCM_BLOCK_SAMPLES];
@@ -79,6 +81,12 @@ pub fn decode_dpcm_into(compressed: &[u8], out: &mut [i8]) -> Result<usize> {
 /// Decode a Pokemon Gen 3 4-bit quadratic DPCM payload into an owned `Vec<i8>`.
 #[cfg(feature = "alloc")]
 pub fn decode_dpcm_vec(compressed: &[u8], sample_count: usize) -> Result<alloc::vec::Vec<i8>> {
+    if sample_count == 0 {
+        return Ok(alloc::vec::Vec::new());
+    }
+    if compressed.len() < dpcm_encoded_len(sample_count) {
+        return Err(Error::UnexpectedEof);
+    }
     let mut out = alloc::vec![0i8; sample_count];
     decode_dpcm_into(compressed, &mut out)?;
     Ok(out)
@@ -93,7 +101,7 @@ pub fn decode_dpcm_vec(compressed: &[u8], sample_count: usize) -> Result<alloc::
 /// - `+0x04` (`u32`): `base_freq_q10` (base sample rate multiplied by 1024)
 /// - `+0x08` (`u32`): `loop_start` (loop start offset in samples)
 /// - `+0x0C` (`u32`): `size` (total sample length in bytes/samples)
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct WaveDataHeader {
     pub wave_type: u16,
     pub stat: u8,
@@ -157,7 +165,7 @@ impl WaveDataHeader {
 }
 
 /// Zero-allocation view into a Nintendo M4A `WaveData` sample (16-byte header + signed 8-bit PCM).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct M4aSampleView<'a> {
     pub header: WaveDataHeader,
     /// Raw PCM bytes starting immediately after the 16-byte header.
@@ -313,7 +321,7 @@ impl<'a> M4aSampleView<'a> {
 
 /// Owned M4A `WaveData` sample with signed 8-bit PCM buffer.
 #[cfg(feature = "alloc")]
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct M4aSample {
     pub header: WaveDataHeader,
     pub pcm_data: alloc::vec::Vec<i8>,

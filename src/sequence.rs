@@ -13,7 +13,7 @@ pub const CLOCK_TABLE: [u8; 49] = [
 ];
 
 /// Instrument / voice type byte in an M4A voicegroup entry.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum VoiceKind {
     DirectSound,
     DirectSoundFixed,
@@ -73,7 +73,7 @@ impl VoiceKind {
 }
 
 /// A 12-byte M4A voicegroup / instrument entry (`ToneData`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct M4aVoice {
     pub kind: VoiceKind,
     pub base_key: u8,
@@ -107,7 +107,7 @@ impl M4aVoice {
 }
 
 /// Zero-allocation view of an M4A song header.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct SongHeaderView<'a> {
     pub track_count: u8,
     pub block_count: u8,
@@ -155,7 +155,7 @@ impl<'a> SongHeaderView<'a> {
 }
 
 /// Track sequencer channel state (`MusicPlayerTrack`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct M4aChannel {
     pub active: bool,
     pub voice: u8,
@@ -203,7 +203,7 @@ impl M4aChannel {
 }
 
 /// Decoded M4A track bytecode event.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum M4aEvent {
     /// `0x80..=0xB0`: Wait for the decoded number of ticks.
     Wait(u8),

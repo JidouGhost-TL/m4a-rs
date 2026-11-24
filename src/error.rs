@@ -3,7 +3,8 @@
 use core::fmt;
 
 /// Errors returned while parsing or synthesizing Nintendo M4A data.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum Error {
     /// Input buffer ended before the expected structure was complete.
     UnexpectedEof,

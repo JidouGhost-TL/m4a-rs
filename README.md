@@ -3,7 +3,7 @@
 **Zero-dependency, pure Rust parser, software synthesizer, and byte-exact mGBA ARM golden-tested emulator for the Nintendo MusicPlayer2000 (M4A / Sappy) Sound Engine (Game Boy Advance).**
 
 [![Crates.io](https://img.shields.io/crates/v/m4a.svg)](https://crates.io/crates/m4a)
-[![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue.svg)](LICENSE-MIT)
+[![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue.svg)](#license)
 [![no_std](https://img.shields.io/badge/no__std-compatible-success.svg)](#features)
 
 > **Looking for a ready-to-use CLI?** You can scan GBA ROMs, export MIDI + WAV samples, and compile SoundFont 2.04 (`.sf2`) banks directly from the command line using our **[gbakit](https://github.com/JidouGhost-TL/gbakit)** toolkit (`gbakit audio scan`, `gbakit audio export`, `gbakit audio soundfont`).
@@ -69,6 +69,22 @@ To guarantee 100% mathematical accuracy without guesswork, `m4a-rs` is verified 
    - **`M4aMixerVariant::Mono`** (~24% of titles): *Mario Kart: Super Circuit* (`AMKE`) & *The Legend of Zelda: The Minish Cap* (`BZME`) mono `>> 8` reverb and `(vol_r + vol_l) >> 9` mono mixing.
    - **`M4aMixerVariant::EarlyV1Stereo` & `EarlyV1Mono`** (2001 launch SDK v1): *EZ-Talk* (`A22J`) and *Mr. Driller 2* (`AD2J`) exact-Hz modulo resampler with zero Q23 pitch drift.
    - **`M4aMixerVariant::MetroidRd1`**: *Metroid Fusion* (`AMTE`) & *Metroid: Zero Mission* (`BMXE`) Nintendo R&D1 32-bit stereo accumulator, Q14 linear interpolation (`lsr #14`), reverse playback, `<< 7` reverb, and 9-bit saturating `>> 7` clamp LUT.
+
+---
+
+## Benchmarks
+
+```sh
+cargo bench --bench bench_audio
+```
+
+| Benchmark | Throughput |
+| --- | ---: |
+| `AccuracySynth` fixed 1:1 (224f) | ~3.63 GSamples/s |
+| `AccuracySynth` resampled Q23 (224f) | ~664 MSamples/s |
+| `AccuracySynth` 3-voice stereo (224f) | ~332 MSamples/s |
+| `AccuracySynth` reverb pass (224f) | ~6.71 GSamples/s |
+| `StudioSynth` Lanczos-4 48 kHz (800f) | ~187 MSamples/s |
 
 ---
 

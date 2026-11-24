@@ -23,7 +23,7 @@ pub const SF_ENV_SUSTAIN: u8 = 0x01;
 pub const SF_ENV_OFF: u8 = 0x00;
 
 /// High-level envelope stage derived from `status_flags`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum EnvelopeStage {
     Off,
     Attack,
@@ -34,7 +34,7 @@ pub enum EnvelopeStage {
 }
 
 /// Bit-exact M4A ADSR + pseudo-echo envelope state for a single DirectSound channel.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct M4aEnvelope {
     pub status_flags: u8,
     pub attack: u8,

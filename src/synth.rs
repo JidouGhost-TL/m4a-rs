@@ -134,7 +134,7 @@ pub fn detect_mixer_variant(rom: &[u8]) -> Option<M4aMixerVariant> {
 }
 
 /// Hardware DirectSound channel state matching Nintendo's 64-byte `SoundChannel` struct.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct M4aSoundChannel {
     /// Envelope state (`status_flags`, ADSR parameters, `envelope_volume`, pseudo-echo).
     pub envelope: M4aEnvelope,
@@ -224,7 +224,7 @@ impl M4aSoundChannel {
 }
 
 /// Bit-exact software emulation of Nintendo's ARM7TDMI `SoundMainRAM` IWRAM mixer.
-#[derive(Debug, Default, Clone, Copy)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct AccuracySynth;
 
 impl AccuracySynth {
@@ -503,16 +503,12 @@ impl AccuracySynth {
                 count = count.saturating_sub(int_step as i32);
                 if count <= 0 {
                     if looped {
-                        // Exact ARM loop wrap (`0x081DC33C..0x081DC350`)
-                        let mut lr = -count;
-                        loop {
-                            count += loop_len;
-                            if count > 0 {
-                                break;
-                            }
-                            lr -= loop_len;
-                        }
-                        pos = loop_start + (lr as usize);
+                        // Exact ARM loop wrap (`0x081DC33C..0x081DC350`), O(1) and overflow-free
+                        let neg_c = -(count as i64);
+                        let ll = loop_len as i64;
+                        let lr = (neg_c % ll) as usize;
+                        count = (ll - (lr as i64)) as i32;
+                        pos = loop_start.saturating_add(lr);
                         s0 = sample.sample_i8(pos) as i32;
                         s1 = sample.sample_i8(pos.saturating_add(1)) as i32;
                         diff = s1 - s0;
@@ -1050,15 +1046,11 @@ impl AccuracySynth {
                     count = count.saturating_sub(int_step as i32);
                     if count <= 0 {
                         if looped {
-                            let mut lr = -count;
-                            loop {
-                                count += loop_len;
-                                if count > 0 {
-                                    break;
-                                }
-                                lr -= loop_len;
-                            }
-                            pos = loop_start + (lr as usize);
+                            let neg_c = -(count as i64);
+                            let ll = loop_len as i64;
+                            let lr = (neg_c % ll) as usize;
+                            count = (ll - (lr as i64)) as i32;
+                            pos = loop_start.saturating_add(lr);
                             s0 = fetch_dpcm(pos);
                             pos = pos.saturating_add(1);
                             s1 = fetch_dpcm(pos);
@@ -1179,15 +1171,11 @@ impl AccuracySynth {
                 count = count.saturating_sub(int_step as i32);
                 if count <= 0 {
                     if looped {
-                        let mut lr = -count;
-                        loop {
-                            count += loop_len;
-                            if count > 0 {
-                                break;
-                            }
-                            lr -= loop_len;
-                        }
-                        pos = loop_start + (lr as usize);
+                        let neg_c = -(count as i64);
+                        let ll = loop_len as i64;
+                        let lr = (neg_c % ll) as usize;
+                        count = (ll - (lr as i64)) as i32;
+                        pos = loop_start.saturating_add(lr);
                         s0 = sample.sample_i8(pos) as i32;
                         s1 = sample.sample_i8(pos.saturating_add(1)) as i32;
                         diff = s1 - s0;
@@ -1243,22 +1231,24 @@ impl AccuracySynth {
         let mut fw = ch.frac_q23;
 
         for (r, l) in out_r[..frames].iter_mut().zip(&mut out_l[..frames]) {
-            while fw >= sample_rate {
-                fw -= sample_rate;
-                remaining = remaining.saturating_sub(1);
-                if remaining == 0 {
-                    if looped {
-                        pos = loop_start;
-                        remaining = loop_len;
-                    } else {
-                        ch.envelope.status_flags = 0;
-                        ch.position = pos;
-                        ch.remaining = 0;
-                        ch.frac_q23 = fw;
-                        return;
-                    }
+            if fw >= sample_rate {
+                let steps = fw / sample_rate;
+                if steps < remaining {
+                    fw %= sample_rate;
+                    remaining -= steps;
+                    pos = pos.saturating_add(steps as usize);
+                } else if looped {
+                    fw %= sample_rate;
+                    let overshoot = (steps - remaining) % loop_len;
+                    pos = loop_start.saturating_add(overshoot as usize);
+                    remaining = loop_len - overshoot;
                 } else {
-                    pos = pos.saturating_add(1);
+                    fw = fw.saturating_sub(remaining.saturating_mul(sample_rate));
+                    ch.envelope.status_flags = 0;
+                    ch.position = pos.saturating_add(remaining.saturating_sub(1) as usize);
+                    ch.remaining = 0;
+                    ch.frac_q23 = fw;
+                    return;
                 }
             }
             let s0 = sample.sample_i8(pos) as i32;
@@ -1299,22 +1289,24 @@ impl AccuracySynth {
         let mut fw = ch.frac_q23;
 
         for o in out.iter_mut() {
-            while fw >= sample_rate {
-                fw -= sample_rate;
-                remaining = remaining.saturating_sub(1);
-                if remaining == 0 {
-                    if looped {
-                        pos = loop_start;
-                        remaining = loop_len;
-                    } else {
-                        ch.envelope.status_flags = 0;
-                        ch.position = pos;
-                        ch.remaining = 0;
-                        ch.frac_q23 = fw;
-                        return;
-                    }
+            if fw >= sample_rate {
+                let steps = fw / sample_rate;
+                if steps < remaining {
+                    fw %= sample_rate;
+                    remaining -= steps;
+                    pos = pos.saturating_add(steps as usize);
+                } else if looped {
+                    fw %= sample_rate;
+                    let overshoot = (steps - remaining) % loop_len;
+                    pos = loop_start.saturating_add(overshoot as usize);
+                    remaining = loop_len - overshoot;
                 } else {
-                    pos = pos.saturating_add(1);
+                    fw = fw.saturating_sub(remaining.saturating_mul(sample_rate));
+                    ch.envelope.status_flags = 0;
+                    ch.position = pos.saturating_add(remaining.saturating_sub(1) as usize);
+                    ch.remaining = 0;
+                    ch.frac_q23 = fw;
+                    return;
                 }
             }
             let s0 = sample.sample_i8(pos) as i32;
@@ -1367,7 +1359,7 @@ const fn build_lanczos4_lut() -> [[f32; 8]; LANCZOS_PHASES + 1] {
 
 /// High-fidelity 48,000 Hz `f32` software synthesizer with windowed-sinc band-limited
 /// interpolation and constant-power stereo panning.
-#[derive(Debug, Default, Clone, Copy)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct StudioSynth;
 
 impl StudioSynth {
@@ -1400,6 +1392,8 @@ impl StudioSynth {
             || output_rate_hz <= 0.0
             || playback_hz <= 0.0
             || !phase.is_finite()
+            || !gain.is_finite()
+            || !pan.is_finite()
         {
             return false;
         }
@@ -1452,7 +1446,7 @@ impl StudioSynth {
             let base = ph as usize;
             if base >= 3 && base <= safe_max_base && step < (1u64 << 31) as f64 {
                 let safe_limit = (safe_max_base as f64) + 0.999_999;
-                let max_interior = (((safe_limit - ph) / step) as usize) + 1;
+                let max_interior = (((safe_limit - ph) / step) as usize).saturating_add(1);
                 let run = max_interior.min(frames - idx);
                 if run >= 4 {
                     const Q32_SCALE: f64 = 4_294_967_296.0;
@@ -1604,4 +1598,32 @@ const fn sin_f64(mut x: f64) -> f64 {
 /// Pure `#![no_std]` `cos(x)` via `sin(x + PI/2)`.
 const fn cos_f64(x: f64) -> f64 {
     sin_f64(x + core::f64::consts::FRAC_PI_2)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_malformed_inputs_do_not_panic_or_poison() {
+        let wavdata: &[u8] = &[
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x0C, 0xD1, 0x00, 0x00, 0x00, 0x00, 0x00, 0x08, 0x00,
+            0x00, 0x00, 0x00, 0x20, 0x40, 0x20, 0x00, 0xE0, 0xC0, 0xE0,
+        ];
+        let sample = M4aSampleView::from_wavdata_bytes(wavdata).unwrap();
+        let mut l = [0.0f32; 8];
+        let mut r = [0.0f32; 8];
+        let mut ph = 3.0;
+        assert!(!StudioSynth::mix_voice_f32(&sample, &mut ph, 13_379.0, 48_000.0, f32::NAN, 0.5, &mut l, &mut r));
+        assert!(!StudioSynth::mix_voice_f32(&sample, &mut ph, 13_379.0, 48_000.0, 1.0, f32::NAN, &mut l, &mut r));
+        assert!(StudioSynth::mix_voice_f32(&sample, &mut ph, 1e-300, 48_000.0, 1.0, 0.5, &mut l, &mut r));
+        assert!(l.iter().all(|x| x.is_finite()));
+        assert!(r.iter().all(|x| x.is_finite()));
+
+        #[cfg(feature = "alloc")]
+        assert_eq!(
+            crate::sample::decode_dpcm_vec(&[], usize::MAX),
+            Err(crate::Error::UnexpectedEof)
+        );
+    }
 }
